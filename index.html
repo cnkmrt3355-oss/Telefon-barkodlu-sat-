@@ -369,13 +369,35 @@
         </div>
 
         <div style="background: white; padding: var(--sp-md); border-radius: var(--radius-md); margin-bottom: var(--sp-md); border: 1px solid var(--border-color);">
-            <h3 style="font-size: var(--fs-md); margin-bottom: var(--sp-sm); color: var(--primary-color);"><i class="fas fa-download"></i> Manuel Yedek</h3>
+            <h3 style="font-size: var(--fs-md); margin-bottom: var(--sp-sm); color: var(--primary-color);"><i class="fas fa-download"></i> Manuel Yedek (JSON)</h3>
             <p style="font-size: var(--fs-xs); color: var(--text-light); margin-bottom: var(--sp-md);">Otomatik yedekleme kullanamıyorsanız, manuel olarak indirip yükleyebilirsiniz.</p>
             <button class="btn-file" onclick="exportData()"><i class="fas fa-download"></i> Yedek Dosyası İndir</button>
             <label for="import-file" class="btn-file" style="background-color: var(--orange-color); cursor: pointer;">
                 <i class="fas fa-upload"></i> Dosyadan Geri Yükle
             </label>
             <input type="file" id="import-file" accept=".json" style="display: none;" onchange="importData(event)">
+        </div>
+
+        <div style="background: white; padding: var(--sp-md); border-radius: var(--radius-md); margin-bottom: var(--sp-md); border: 1px solid var(--border-color);">
+            <h3 style="font-size: var(--fs-md); margin-bottom: var(--sp-sm); color: var(--primary-color);">
+                <i class="fas fa-list-alt"></i> Ürün Listesi (TXT Formatı)
+            </h3>
+            <p style="font-size: var(--fs-xs); color: var(--text-light); margin-bottom: var(--sp-md); line-height: 1.6;">
+                Diğer programınızla ürün listesini paylaşmak için kullanın.<br>
+                Format: <code style="background:#f0f0f0; padding:2px 4px; border-radius:3px;">Ürün Adı;Barkod;Fiyat;Stok</code>
+            </p>
+            <button class="btn-file" style="background: var(--blue-color);" onclick="exportProductsTxt()">
+                <i class="fas fa-file-export"></i> Ürün Listesini İndir (.txt)
+            </button>
+            <label for="import-products-txt" class="btn-file" style="background-color: var(--orange-color); cursor: pointer;">
+                <i class="fas fa-file-import"></i> TXT'den Ürünleri Güncelle (Birleştir)
+            </label>
+            <input type="file" id="import-products-txt" accept=".txt,.csv" style="display: none;" onchange="importProductsTxt(event, 'merge')">
+
+            <label for="import-products-txt-replace" class="btn-file" style="background-color: var(--red-color); cursor: pointer;">
+                <i class="fas fa-sync-alt"></i> TXT ile Ürünleri Değiştir (Tümünü Sil)
+            </label>
+            <input type="file" id="import-products-txt-replace" accept=".txt,.csv" style="display: none;" onchange="importProductsTxt(event, 'replace')">
         </div>
 
         <div style="background: white; padding: var(--sp-md); border-radius: var(--radius-md); margin-bottom: var(--sp-md); border: 1px solid var(--border-color);">
@@ -1364,7 +1386,7 @@
             container.innerHTML = html;
         }
 
-        // ==== DIŞA/İÇE AKTARMA ====
+        // ==== DIŞA/İÇE AKTARMA (JSON) ====
         async function exportData() {
             const data = { version: 2, lastUpdate: new Date().toISOString(), products, cart, salesHistory, settings: { vatRate, lowStockThreshold } };
             const dataStr = JSON.stringify(data, null, 2);
@@ -1416,16 +1438,185 @@
             }
         }
 
+        // ============================================================
+        // ==== ÜRÜN LİSTESİ TXT DIŞA/İÇE AKTARMA ====
+        // Format: Urun Adi;Barkod;Fiyat;Stok
+        // ============================================================
+
+        /**
+         * Ürünleri TXT olarak indir
+         */
+        function exportProductsTxt() {
+            if (products.length === 0) {
+                alert("Dışa aktarılacak ürün yok!");
+                return;
+            }
+            let content = "# Format: Urun Adi;Barkod;Fiyat;Stok\n";
+            products.forEach(p => {
+                const safeName = String(p.name || '')
+                    .replace(/[;\r\n]/g, ' ')
+                    .trim();
+                const safeBarcode = String(p.barcode || '').replace(/[;\r\n]/g, '').trim();
+                const priceStr = Number(p.price).toString();
+                const stockStr = String(parseInt(p.stock) || 0);
+                content += `${safeName};${safeBarcode};${priceStr};${stockStr}\n`;
+            });
+
+            const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            const ts = new Date().toISOString().slice(0, 10);
+            a.download = `urun_listesi_${ts}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            if (navigator.vibrate) navigator.vibrate(80);
+            showBackupStatus(`✅ ${products.length} ürün TXT olarak indirildi.`, 'success');
+        }
+
+        /**
+         * TXT dosyasından ürünleri içe aktar
+         * @param {Event} event - file input event
+         * @param {'merge'|'replace'} mode - birleştir veya değiştir
+         */
+        function importProductsTxt(event, mode = 'merge') {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                try {
+                    const text = e.target.result;
+                    const lines = text.split(/\r?\n/);
+                    const parsed = [];
+                    const errors = [];
+                    const seenBarcodes = new Set();
+
+                    lines.forEach((line, idx) => {
+                        const trimmed = line.trim();
+                        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) return;
+
+                        const parts = trimmed.split(';');
+                        if (parts.length < 4) {
+                            errors.push(`Satır ${idx + 1}: 4 alan bekleniyor, ${parts.length} bulundu`);
+                            return;
+                        }
+
+                        const name = parts[0].trim();
+                        const barcode = parts[1].trim();
+                        const priceRaw = parts[2].trim().replace(',', '.');
+                        const price = parseFloat(priceRaw);
+                        const stock = parseInt(parts[3].trim(), 10);
+
+                        if (!name) { errors.push(`Satır ${idx + 1}: Ürün adı boş`); return; }
+                        if (!barcode) { errors.push(`Satır ${idx + 1}: Barkod boş`); return; }
+                        if (isNaN(price) || price < 0) { errors.push(`Satır ${idx + 1}: Geçersiz fiyat (${parts[2]})`); return; }
+                        if (isNaN(stock) || stock < 0) { errors.push(`Satır ${idx + 1}: Geçersiz stok (${parts[3]})`); return; }
+
+                        if (seenBarcodes.has(barcode)) return;
+                        seenBarcodes.add(barcode);
+
+                        parsed.push({ name, barcode, price, stock });
+                    });
+
+                    if (parsed.length === 0) {
+                        alert("Dosyada geçerli ürün bulunamadı!" + (errors.length ? `\n\nHatalar:\n${errors.slice(0, 5).join('\n')}` : ''));
+                        event.target.value = '';
+                        return;
+                    }
+
+                    const modeText = mode === 'merge'
+                        ? "BİRLEŞTİR (barkoda göre mevcut ürünler güncellenecek, yeniler eklenecek)"
+                        : "DEĞİŞTİR (mevcut tüm ürünler silinip sadece bu dosyadakiler yüklenecek)";
+
+                    let msg = `📄 Dosyadan okunan: ${parsed.length} ürün\n`;
+                    msg += `Mod: ${modeText}\n`;
+                    if (errors.length) msg += `⚠️ Atlanan satır: ${errors.length}\n`;
+                    msg += `\nDevam edilsin mi?`;
+
+                    if (!confirm(msg)) {
+                        event.target.value = '';
+                        return;
+                    }
+
+                    if (mode === 'merge') {
+                        let added = 0, updated = 0;
+                        parsed.forEach(item => {
+                            const existing = products.find(p => p.barcode === item.barcode);
+                            if (existing) {
+                                existing.name = item.name;
+                                existing.price = item.price;
+                                existing.stock = item.stock;
+                                updated++;
+                            } else {
+                                const newId = products.length > 0 ? Math.max(...products.map(p => p.id)) + 1 : 1;
+                                products.push({
+                                    id: newId,
+                                    name: item.name,
+                                    barcode: item.barcode,
+                                    price: item.price,
+                                    stock: item.stock,
+                                    image: "📦"
+                                });
+                                added++;
+                            }
+                        });
+
+                        await saveToDB("products", products);
+                        scheduleBackup();
+                        renderStock();
+                        renderCart();
+                        if (navigator.vibrate) navigator.vibrate(100);
+
+                        let resultMsg = `✅ İşlem tamamlandı!\n\n➕ Eklenen: ${added}\n🔄 Güncellenen: ${updated}`;
+                        if (errors.length) resultMsg += `\n\n⚠️ Atlanan satırlar:\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? `\n... +${errors.length - 5} hata` : ''}`;
+                        alert(resultMsg);
+                        showBackupStatus(`✅ ${added} yeni, ${updated} güncellendi.`, 'success');
+
+                    } else {
+                        products = parsed.map((item, i) => ({
+                            id: i + 1,
+                            name: item.name,
+                            barcode: item.barcode,
+                            price: item.price,
+                            stock: item.stock,
+                            image: "📦"
+                        }));
+
+                        cart = cart.filter(c => products.some(p => p.id === c.id));
+
+                        await saveToDB("products", products);
+                        await saveToDB("cart", cart);
+                        scheduleBackup();
+                        renderStock();
+                        renderCart();
+                        if (navigator.vibrate) navigator.vibrate(100);
+
+                        let resultMsg = `✅ ${products.length} ürün yüklendi (değiştirme modu).`;
+                        if (errors.length) resultMsg += `\n\n⚠️ Atlanan satırlar:\n${errors.slice(0, 5).join('\n')}`;
+                        alert(resultMsg);
+                        showBackupStatus(`✅ ${products.length} ürün yüklendi.`, 'success');
+                    }
+
+                } catch (err) {
+                    alert("Dosya okunamadı: " + err.message);
+                }
+                event.target.value = '';
+            };
+            reader.readAsText(file, 'UTF-8');
+        }
+
         // ==== KISAYOLLAR ====
         document.addEventListener('keydown', (e) => {
-            // Sadece input dışında çalışsın (global)
             const tag = (e.target.tagName || '').toLowerCase();
             const inInput = tag === 'input' || tag === 'textarea' || tag === 'select';
             if (e.key === 'F2' && !inInput) {
                 e.preventDefault();
                 processPayment();
             } else if (e.key === 'Escape') {
-                // Açık olan modalları kapat
                 ['payment-modal', 'receipt-modal', 'product-modal', 'restore-modal', 'ask-folder-modal'].forEach(id => {
                     document.getElementById(id)?.classList.remove('active');
                 });
